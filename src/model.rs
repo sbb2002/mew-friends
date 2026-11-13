@@ -77,6 +77,9 @@ pub struct Preview {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Channel {
+    /// 원어 이름(「千石ユノ -Sengoku Yuno-」) — 원문 면 이름 자리(fxtwitter 를 받기 전)
+    #[serde(default, deserialize_with = "null_default")]
+    pub name: Option<String>,
     #[serde(default, deserialize_with = "null_default")]
     pub name_ko: Option<String>,
     #[serde(default, deserialize_with = "null_default")]
@@ -107,6 +110,12 @@ pub struct Item {
     pub scheduled_start: Option<String>,
     #[serde(default, deserialize_with = "null_default")]
     pub assumed_live: bool,
+    /// 썸네일(YouTube maxresdefault)
+    #[serde(default, deserialize_with = "null_default")]
+    pub thumbnail: Option<String>,
+    /// 회원 전용
+    #[serde(default, deserialize_with = "null_default")]
+    pub membership: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -138,6 +147,26 @@ pub struct Tweet {
     pub received_at: Option<String>,
     #[serde(default, deserialize_with = "null_default")]
     pub reply_to_id: Option<String>,
+    /// X 핸들(@ 없이). 트윗 시트 머리 줄에 쓴다.
+    #[serde(default, deserialize_with = "null_default")]
+    pub handle: Option<String>,
+    /// 첨부 그림 주소(영상 · GIF 는 썸네일 주소)
+    #[serde(default, deserialize_with = "null_default")]
+    pub media: Vec<String>,
+    /// 인용한 글
+    #[serde(default, deserialize_with = "null_default")]
+    pub quote: Option<Quote>,
+}
+
+/// 인용한 글(계약 I `quote`).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Quote {
+    #[serde(default, deserialize_with = "null_default")]
+    pub text: Option<String>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub text_ko: Option<String>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub media: Vec<String>,
 }
 
 impl Preview {

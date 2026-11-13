@@ -28,9 +28,9 @@ use windows::Win32::UI::Shell::{
     QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, GWLP_USERDATA, GetWindowLongPtrW, HWND_BOTTOM, IDC_HAND,
+    CreateWindowExW, DefWindowProcW, GWLP_USERDATA, GetWindowLongPtrW, HWND_BOTTOM, HWND_TOPMOST, IDC_HAND,
     LoadCursorW, MA_NOACTIVATE, RegisterClassExW, SET_WINDOW_POS_FLAGS, SetCursor,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, SPI_GETWORKAREA, SW_SHOWNOACTIVATE,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, SPI_GETWORKAREA, SW_HIDE, SW_SHOWNOACTIVATE,
     SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW, UpdateLayeredWindow,
     ULW_ALPHA, WINDOW_EX_STYLE, WINDOWPOS, WM_DISPLAYCHANGE, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_MOUSEACTIVATE, WM_SETCURSOR, WM_SETTINGCHANGE, WM_WINDOWPOSCHANGING, WNDCLASSEXW,
@@ -46,6 +46,8 @@ const WIN_W: f32 = 140.0;
 const WIN_H: f32 = 158.0;
 /// 창 위쪽 LIVE 표시 자리.
 const LIVE_H: f32 = 28.0;
+/// 말풍선 꼬리 끝 ~ 캐릭터 그림 칸 위쪽 사이(그림 위 투명 여백만큼 내린다).
+const HEAD_GAP: f32 = 4.0;
 /// 작업 영역을 나누는 칸 수(멤버 5명 · 유노 칸도 비워 둔다).
 const SLOTS: f32 = 5.0;
 /// 걷기 속도(기준 px/초 × 배율).
@@ -56,6 +58,8 @@ thread_local! {
     static CLICKS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     /// 왼쪽 버튼을 누른 창(창 index). 떼는 창과 같을 때만 클릭이다.
     static PRESSED: Cell<Option<usize>> = const { Cell::new(None) };
+    /// 항상 위(트레이 설정). 끄면 다른 창 뒤 바탕화면에만 둔다.
+    static TOPMOST: Cell<bool> = const { Cell::new(false) };
     /// 해상도 · 작업 영역이 바뀌었다는 표시(다음 tick 에서 다시 배치).
     static RELAYOUT: Cell<bool> = const { Cell::new(false) };
 }
@@ -160,7 +164,13 @@ pub struct Critters {
     last_t: Option<f64>,
     busy: bool,
     busy_checked: f64,
+    /// 항상 위인데 전체 화면 앱이 떠 있어 창을 숨겼다
+    hidden: bool,
+    /// 항상 위 확인 시각
+    top_checked: f64,
     frame_ms: u32,
+    /// 말풍선을 띄운 멤버 — 유노면 걷기를 멈추고 제자리에서 쉰다.
+    talking: Option<String>,
 }
 
 impl Critters {
@@ -237,7 +247,10 @@ impl Critters {
             last_t: None,
             busy: false,
             busy_checked: f64::NEG_INFINITY,
+            hidden: false,
+            top_checked: 0.0,
             frame_ms: 250,
+            talking: None,
         };
         c.layout();
         if let Some(yi) = yuno {
@@ -274,6 +287,26 @@ impl Critters {
             self.busy_checked = now;
             self.busy = fullscreen_busy();
         }
+        // 항상 위인데 풀린 창이 있으면 다시 올린다(1초마다 확인 — 무엇이 풀었는지는 로그로)
+        let top = TOPMOST.with(|t| t.get());
+        if top && !self.hidden && now - self.top_checked >= 1.0 {
+            self.top_checked = now;
+            let lost: Vec<&str> = self.wins.iter().filter(|w| !is_topmost(w.hwnd)).map(|w| w.key.as_str()).collect();
+            if !lost.is_empty() {
+                eprintln!("[critter] 항상 위가 풀린 창: {lost:?} → 다시 올림");
+                self.set_topmost(true);
+            }
+        }
+        // 항상 위일 때 전체 화면 앱(게임 · 발표) 위로 올라오지 않게 숨긴다.
+        let hide = self.busy && top;
+        if hide != self.hidden {
+            self.hidden = hide;
+            for w in &self.wins {
+                unsafe {
+                    let _ = ShowWindow(w.hwnd, if hide { SW_HIDE } else { SW_SHOWNOACTIVATE });
+                }
+            }
+        }
         if self.busy {
             // 전체 화면 · 프레젠테이션 중엔 그리지도 움직이지도 않는다.
             self.frame_ms = 1000;
@@ -293,9 +326,13 @@ impl Critters {
             let max = (self.work.right - self.win_w) as f64;
             let y = self.win_y();
             let speed = WALK_SPEED * self.scale as f64;
+            let hold = self.talking.as_deref() == Some(self.wins[yi].key.as_str());
             if let Some(wd) = self.wander.as_mut() {
-                wd.step(now, dt, speed, min, max);
-                let (x, flip, phase) = (wd.x.round() as i32, wd.flip() as f32, wd.phase);
+                if !hold {
+                    wd.step(now, dt, speed, min, max);
+                }
+                let phase = if hold { Phase::Idle } else { wd.phase };
+                let (x, flip) = (wd.x.round() as i32, wd.flip() as f32);
                 yuno_phase = Some(phase);
                 let pose = motion::pose(phase, now);
                 let closed = motion::blink_closed(now);
@@ -362,6 +399,43 @@ impl Critters {
                 w.dirty = true;
             }
         }
+    }
+
+    /// 전체 화면 앱 · 프레젠테이션 중(자동 말풍선을 띄우지 않는다).
+    pub fn is_busy(&self) -> bool {
+        self.busy
+    }
+
+    /// 항상 위 켜기 · 끄기. 끄면 맨 아래(바탕화면 바로 위)로 내린다.
+    pub fn set_topmost(&mut self, on: bool) {
+        TOPMOST.with(|t| t.set(on));
+        // 뒤에서부터 올린다(먼저 올린 창이 무리 맨 아래에 깔리므로 — 순서대로면 아라레가 늘 가장 아래였다)
+        for w in self.wins.iter().rev() {
+            unsafe {
+                let _ = SetWindowPos(
+                    w.hwnd,
+                    Some(if on { HWND_TOPMOST } else { HWND_BOTTOM }),
+                    0,
+                    0,
+                    0,
+                    0,
+                    flags(&[SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE]),
+                );
+            }
+        }
+    }
+
+    /// 말풍선을 띄운 멤버(없으면 None). 유노는 말하는 동안 멈춰 선다.
+    pub fn set_talking(&mut self, member: Option<&str>) {
+        self.talking = member.map(str::to_string);
+    }
+
+    /// 말풍선 꼬리가 가리킬 점(화면 좌표) — 캐릭터 머리 위 가운데. LIVE 배지가 있으면 배지 위.
+    pub fn anchor(&self, member: &str) -> Option<(i32, i32)> {
+        let w = self.wins.iter().find(|w| w.key == member)?;
+        let (x, y) = w.pos?;
+        let top = if w.live { 0.0 } else { LIVE_H * self.scale } + HEAD_GAP * self.scale;
+        Some((x + self.win_w / 2, y + top.round() as i32))
     }
 
     /// 지난 호출 뒤 눌린 캐릭터(멤버 key).
@@ -531,6 +605,11 @@ fn create_window(hinst: HINSTANCE, w: i32, h: i32) -> Result<HWND, String> {
     .map_err(|e| format!("캐릭터 창 생성 실패: {e}"))
 }
 
+fn is_topmost(hwnd: HWND) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, GetWindowLongW, WS_EX_TOPMOST};
+    unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST.0 != 0 }
+}
+
 /// 창 userdata 에 넣어 둔 index(i + 1). 0 이면 없음.
 fn index_of(hwnd: HWND) -> Option<usize> {
     let v = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
@@ -541,11 +620,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     unsafe {
         match msg {
             WM_WINDOWPOSCHANGING => {
-                // z 순서를 바꾸려는 시도(NOZORDER 가 없음)는 맨 아래로 고친다.
+                // z 순서를 바꾸려는 시도(NOZORDER 가 없음)는 설정 쪽으로 고친다:
+                // 항상 위 = 항상 위 무리 맨 앞(다른 무엇이 끌어내리려 해도 · 활성화돼도), 끔 = 맨 아래.
                 if lp.0 != 0 {
                     let pos = lp.0 as *mut WINDOWPOS;
                     if (*pos).flags.0 & SWP_NOZORDER.0 == 0 {
-                        (*pos).hwndInsertAfter = HWND_BOTTOM;
+                        let top = TOPMOST.with(|t| t.get());
+                        let want = if top { HWND_TOPMOST } else { HWND_BOTTOM };
+                        // (Windows 는 HWND_TOPMOST 요청도 실제 창 핸들로 바꿔 보내므로 요청 값으로는 판단하지 않는다)
+                        (*pos).hwndInsertAfter = want;
                     }
                 }
             }
@@ -583,4 +666,103 @@ fn seed() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(1)
+}
+
+#[cfg(test)]
+mod bubble_tests {
+    use super::*;
+    use crate::model::{parse_preview, parse_tweets};
+    use tiny_skia::{PixmapPaint, Transform};
+
+    /// 캐릭터 + 말풍선을 화면 위치 그대로 합쳐 `target/critter_bubble.png` 로 저장한다.
+    /// 실행: cargo test critter_bubble -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn critter_bubble() {
+        let order: Vec<String> = ["arale", "yuno", "nonoka", "ritsu", "miyako"].iter().map(|s| s.to_string()).collect();
+        let mut c = Critters::new(&order).unwrap();
+        let top = |h: HWND| unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowLongW(h, windows::Win32::UI::WindowsAndMessaging::GWL_EXSTYLE) } as u32
+            & windows::Win32::UI::WindowsAndMessaging::WS_EX_TOPMOST.0 != 0;
+        c.set_topmost(true);
+        assert!(c.wins.iter().all(|w| top(w.hwnd)), "항상 위 켜짐");
+        c.set_topmost(false);
+        assert!(c.wins.iter().all(|w| !top(w.hwnd)), "항상 위 꺼짐");
+        c.set_live("nonoka", true);
+        c.tick();
+        let p = parse_preview(include_str!("../fixtures/preview.sample.json")).unwrap();
+        let t = parse_tweets(include_str!("../fixtures/tweets.sample.json")).unwrap();
+        let now = crate::util::parse_utc("2026-09-07T12:30:00Z").unwrap();
+        for key in ["yuno", "nonoka", "arale"] {
+            c.set_talking(Some(key));
+            c.tick();
+            let a = c.anchor(key).unwrap();
+            crate::panel::show(crate::panel::build_data(key, &p, &t, now), a);
+            let (img, pos) = crate::panel::snapshot().unwrap();
+            let w = c.wins.iter().find(|w| w.key == key).unwrap();
+            let (wx, wy) = w.pos.unwrap();
+            let left = pos.0.min(wx);
+            let top = pos.1;
+            let right = (pos.0 + img.width() as i32).max(wx + c.win_w);
+            let bottom = wy + c.win_h;
+            let mut out = Pixmap::new((right - left) as u32, (bottom - top) as u32).unwrap();
+            out.fill(tiny_skia::Color::from_rgba8(58, 110, 165, 255));
+            out.draw_pixmap(wx - left, wy - top, w.pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+            out.draw_pixmap(pos.0 - left, pos.1 - top, img.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("target/critter_bubble_{key}.png"));
+            out.save_png(&path).unwrap();
+            println!("saved {} anchor={a:?} win=({wx},{wy})", path.display());
+            crate::panel::close();
+            let start = std::time::Instant::now();
+            while start.elapsed().as_millis() < 400 {
+                unsafe {
+                    let mut msg = windows::Win32::UI::WindowsAndMessaging::MSG::default();
+                    while windows::Win32::UI::WindowsAndMessaging::PeekMessageW(&mut msg, None, 0, 0, windows::Win32::UI::WindowsAndMessaging::PM_REMOVE).as_bool() {
+                        windows::Win32::UI::WindowsAndMessaging::DispatchMessageW(&msg);
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod topmost_tests {
+    use super::*;
+    use windows::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, GetWindowLongW, WS_EX_TOPMOST};
+
+    fn tops(c: &Critters) -> Vec<(String, bool)> {
+        c.wins
+            .iter()
+            .map(|w| (w.key.clone(), unsafe { GetWindowLongW(w.hwnd, GWL_EXSTYLE) } as u32 & WS_EX_TOPMOST.0 != 0))
+            .collect()
+    }
+
+    /// 끔으로 시작 → 켬 → tick 몇 번 — 모든 캐릭터가 항상 위여야 한다.
+    #[test]
+    #[ignore]
+    fn topmost_all() {
+        let order: Vec<String> = ["arale", "yuno", "nonoka", "ritsu", "miyako"].iter().map(|s| s.to_string()).collect();
+        let mut c = Critters::new(&order).unwrap();
+        c.set_topmost(false);
+        println!("off  : {:?}", tops(&c));
+        c.set_topmost(true);
+        println!("on   : {:?}", tops(&c));
+        c.set_live("arale", true);
+        for _ in 0..5 {
+            c.tick();
+        }
+        println!("tick : {:?}", tops(&c));
+        assert!(tops(&c).iter().all(|(_, t)| *t));
+        // 누군가 아라레를 맨 아래 · 항상 위 밖으로 옮기려 해도 항상 위로 남는다
+        unsafe {
+            let _ = SetWindowPos(c.wins[0].hwnd, Some(HWND_BOTTOM), 0, 0, 0, 0, flags(&[SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE]));
+            let _ = SetWindowPos(c.wins[0].hwnd, Some(windows::Win32::UI::WindowsAndMessaging::HWND_NOTOPMOST), 0, 0, 0, 0, flags(&[SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE]));
+        }
+        println!("poke : {:?}", tops(&c));
+        assert!(tops(&c)[0].1, "아라레가 항상 위로 남아야 한다");
+        // 끄면 다 내려간다
+        c.set_topmost(false);
+        assert!(tops(&c).iter().all(|(_, t)| !*t));
+    }
 }

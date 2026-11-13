@@ -16,6 +16,8 @@ const TRAY_ICON_PNG: &[u8] = include_bytes!("../assets/icons/yuno.png");
 const ID_LIVE: &str = "live";
 const ID_TWEET: &str = "tweet";
 const ID_AUTOSTART: &str = "autostart";
+const ID_TOPMOST: &str = "topmost";
+const ID_AUTOBUBBLE: &str = "autobubble";
 const ID_INFO: &str = "info";
 const ID_QUIT: &str = "quit";
 const ID_OPEN_PREFIX: &str = "open:";
@@ -25,6 +27,8 @@ pub enum TrayAction {
     OpenPanel(String),
     SetLiveAlerts(bool),
     SetTweetAlerts(bool),
+    SetAlwaysOnTop(bool),
+    SetAutoBubble(bool),
     SetAutostart(bool),
     Quit,
 }
@@ -35,6 +39,8 @@ pub struct Tray {
     // 메뉴 항목 핸들 — 이벤트 시점의 체크 상태를 읽는 데 쓴다.
     live: CheckMenuItem,
     tweet: CheckMenuItem,
+    topmost: CheckMenuItem,
+    autobubble: CheckMenuItem,
     autostart: CheckMenuItem,
 }
 
@@ -74,6 +80,20 @@ impl Tray {
             settings.tweet_alerts,
             None,
         );
+        let autobubble = CheckMenuItem::with_id(
+            ID_AUTOBUBBLE,
+            "새 트윗 말풍선 자동으로 띄우기",
+            true,
+            settings.auto_bubble,
+            None,
+        );
+        let topmost = CheckMenuItem::with_id(
+            ID_TOPMOST,
+            "캐릭터 · 말풍선 항상 위에",
+            true,
+            settings.always_on_top,
+            None,
+        );
         let autostart_item = CheckMenuItem::with_id(
             ID_AUTOSTART,
             "Windows 시작 시 실행",
@@ -85,12 +105,16 @@ impl Tray {
         let quit = MenuItem::with_id(ID_QUIT, "종료", true, None);
         let sep1 = PredefinedMenuItem::separator();
         let sep2 = PredefinedMenuItem::separator();
+        let sep3 = PredefinedMenuItem::separator();
 
         let menu = Menu::with_items(&[
             &open_menu,
             &sep1,
             &live,
             &tweet,
+            &autobubble,
+            &sep3,
+            &topmost,
             &autostart_item,
             &sep2,
             &info,
@@ -106,7 +130,7 @@ impl Tray {
             .build()
             .map_err(|e| format!("트레이 아이콘 생성 실패: {e}"))?;
 
-        Ok(Tray { _icon: tray, live, tweet, autostart: autostart_item })
+        Ok(Tray { _icon: tray, live, tweet, topmost, autobubble, autostart: autostart_item })
     }
 
     /// 쌓인 메뉴 동작을 꺼낸다(막히지 않음). 메시지 루프가 한 바퀴 돌 때마다 부른다.
@@ -121,6 +145,8 @@ impl Tray {
             match id {
                 ID_LIVE => out.push(TrayAction::SetLiveAlerts(self.live.is_checked())),
                 ID_TWEET => out.push(TrayAction::SetTweetAlerts(self.tweet.is_checked())),
+                ID_TOPMOST => out.push(TrayAction::SetAlwaysOnTop(self.topmost.is_checked())),
+                ID_AUTOBUBBLE => out.push(TrayAction::SetAutoBubble(self.autobubble.is_checked())),
                 ID_AUTOSTART => {
                     out.push(TrayAction::SetAutostart(self.autostart.is_checked()))
                 }
