@@ -8,7 +8,9 @@ mod autostart;
 mod critter;
 mod diff;
 mod model;
+mod net;
 mod panel;
+mod player;
 mod poll;
 mod state;
 mod toast;
@@ -66,11 +68,14 @@ impl App {
             }
             self.preview = Some(p);
         }
+        // 이번 폴링에서 새 트윗이 온 멤버(여럿이면 마지막) — 자동 말풍선 대상
+        let mut auto_member: Option<String> = None;
         if let Some(t) = r.tweets {
             let notices = diff::diff_tweets(&mut self.st.seen, &t, Utc::now());
             for n in notices {
                 if let Notice::NewTweet { member, text_ko, url, .. } = n {
                     self.critters.set_unread(&member, true);
+                    auto_member = Some(member.clone());
                     if self.st.settings.tweet_alerts {
                         let name = self
                             .preview
@@ -84,19 +89,37 @@ impl App {
             }
             self.tweets = Some(t);
         }
+        // 새 트윗 → 그 캐릭터 위에 자동 말풍선(전체 화면 앱 중에는 띄우지 않는다).
+        // 그 밖엔 열린 말풍선을 새 데이터로 갈아 끼운다.
+        let auto = auto_member
+            .filter(|_| self.st.settings.auto_bubble && !self.critters.is_busy())
+            .and_then(|m| self.critters.anchor(&m).map(|a| (m, a)));
+        if let Some((m, a)) = auto {
+            panel::show_auto(self.panel_data(&m), a);
+        } else if let Some(m) = panel::current() {
+            panel::update(self.panel_data(&m));
+        }
         state::save(&self.st);
     }
 
-    fn open_panel(&mut self, member: &str) {
+    fn panel_data(&self, member: &str) -> panel::PanelData {
         let empty_p = Preview::default();
         let empty_t = TweetsFile::default();
-        let data = panel::build_data(
+        panel::build_data(
             member,
             self.preview.as_ref().unwrap_or(&empty_p),
             self.tweets.as_ref().unwrap_or(&empty_t),
             Utc::now(),
-        );
-        panel::show(data);
+        )
+    }
+
+    /// 캐릭터 머리 위 말풍선으로 트윗 시트를 연다(같은 멤버가 열려 있으면 닫는다).
+    fn open_panel(&mut self, member: &str) {
+        let Some(anchor) = self.critters.anchor(member) else {
+            eprintln!("[main] {member} 캐릭터 위치를 몰라 말풍선을 띄우지 못함");
+            return;
+        };
+        panel::show(self.panel_data(member), anchor);
         self.critters.set_unread(member, false);
     }
 }
@@ -156,6 +179,9 @@ fn main() {
     };
 
     let mut app = App { st, critters, preview: None, tweets: None };
+    app.critters.set_topmost(app.st.settings.always_on_top);
+    panel::set_topmost(app.st.settings.always_on_top);
+    panel::set_face_pref(app.st.settings.tweet_face_orig);
 
     let (tx, rx) = mpsc::channel();
     poll::spawn(tx, unsafe { GetCurrentThreadId() });
@@ -194,6 +220,24 @@ fn main() {
         for m in app.critters.take_clicks() {
             app.open_panel(&m);
         }
+        for m in panel::take_requests() {
+            app.open_panel(&m);
+        }
+        // 자동 말풍선을 눌러 고정 = 읽은 것으로(새 트윗 점 지우기)
+        for m in panel::take_pinned() {
+            app.critters.set_unread(&m, false);
+        }
+        // 「번역 · 원문」 탭 저장값
+        if let Some(orig) = panel::take_face_change() {
+            app.st.settings.tweet_face_orig = orig;
+            state::save(&app.st);
+        }
+        // 말풍선이 캐릭터를 따라가고, 말하는 동안 유노는 멈춰 선다.
+        let talking = panel::current();
+        if let Some(a) = talking.as_deref().and_then(|m| app.critters.anchor(m)) {
+            panel::follow(a);
+        }
+        app.critters.set_talking(talking.as_deref());
         for a in tray.poll() {
             match a {
                 tray::TrayAction::OpenPanel(m) => app.open_panel(&m),
@@ -203,6 +247,16 @@ fn main() {
                 }
                 tray::TrayAction::SetTweetAlerts(b) => {
                     app.st.settings.tweet_alerts = b;
+                    state::save(&app.st);
+                }
+                tray::TrayAction::SetAlwaysOnTop(b) => {
+                    app.st.settings.always_on_top = b;
+                    app.critters.set_topmost(b);
+                    panel::set_topmost(b);
+                    state::save(&app.st);
+                }
+                tray::TrayAction::SetAutoBubble(b) => {
+                    app.st.settings.auto_bubble = b;
                     state::save(&app.st);
                 }
                 tray::TrayAction::SetAutostart(b) => {

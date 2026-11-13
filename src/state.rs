@@ -12,11 +12,17 @@ use crate::util;
 pub struct Settings {
     pub live_alerts: bool,
     pub tweet_alerts: bool,
+    /// 캐릭터 · 말풍선을 항상 위에(끄면 다른 창 뒤 바탕화면에만 — 방해하지 않기)
+    pub always_on_top: bool,
+    /// 새 트윗이 오면 그 캐릭터 위에 말풍선을 자동으로 5초 띄운다
+    pub auto_bubble: bool,
+    /// 트윗 시트 면 — true = 원문(X 카드) 면으로 연다(원본 mew:tllang)
+    pub tweet_face_orig: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { live_alerts: true, tweet_alerts: true }
+        Settings { live_alerts: true, tweet_alerts: true, always_on_top: false, auto_bubble: true, tweet_face_orig: false }
     }
 }
 
@@ -112,6 +118,8 @@ mod tests {
         let s = parse(r#"{"settings":{"live_alerts":false}}"#).unwrap();
         assert!(!s.settings.live_alerts);
         assert!(s.settings.tweet_alerts);
+        // 새 설정 기본값: 항상 위 끔 · 자동 말풍선 켬
+        assert!(!s.settings.always_on_top && s.settings.auto_bubble);
     }
 
     #[test]

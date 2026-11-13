@@ -99,6 +99,9 @@
   2. 구분선
   3. 체크 「방송 시작 알림」(초기값 `settings.live_alerts`) → `SetLiveAlerts(체크 상태)`
   4. 체크 「새 트윗 알림」(초기값 `settings.tweet_alerts`) → `SetTweetAlerts(…)`
+  4-1. 체크 「새 트윗 말풍선 자동으로 띄우기」(초기값 `settings.auto_bubble`, 기본 켬) → `SetAutoBubble(…)`
+  4-2. 구분선
+  4-3. 체크 「캐릭터 · 말풍선 항상 위에」(초기값 `settings.always_on_top`, 기본 끔 = 다른 창 뒤에서 방해하지 않기) → `SetAlwaysOnTop(…)`
   5. 체크 「Windows 시작 시 실행」(초기값 `autostart`) → `SetAutostart(…)`
   6. 구분선
   7. 「정보」 → 메시지 상자(`MessageBoxW`, 아이콘 정보): `"Mew Friends (MVP)\n비공식 팬 제작 · AI 생성 일러스트 · 공식과 무관\n데이터: mewtype-schduler.vercel.app"` — 이 동작은 `TrayAction` 을 내지 않고 tray 안에서 처리.
@@ -173,32 +176,66 @@
 
 ---
 
-## 8. 작업 D — `panel.rs`
+## 8. 작업 D — `panel.rs` · `panel/{data,sheet,card,view}.rs` · `net.rs` · `player.rs` (트윗 말풍선)
+
+> 2026-11-13 개정: 목록 창(LISTBOX) → **캐릭터 바로 위 말풍선**. 생김새 · 구성 = mewtype-scheduler 트윗 시트(`js/tweets.js` · `css/tweets.css` `.tws`)를 그대로 옮긴다.
 
 ### 8-1. `build_data(member, preview, tweets, now) -> PanelData` (순수)
 - `name_ko` = `preview.name_ko(member)`; 데이터가 비어 key 가 그대로 오면 `model::short_name_ko(member)`.
 - `live` = `preview.items` 중 `state == "live"` 이고 `members()` 에 `member` 가 있는 **첫** 항목 → `(display_title(), url)`. `url` 규칙은 작업 A 4-1 과 같다(item.url → channel_url → `https://www.youtube.com/`).
-- `tweets` = `tweets.tweets[member]` 중 **만료 안 된 글**(`expires_at` > now, 못 읽으면 보임)만, **최신이 앞**(파일은 최신이 뒤 → 뒤집기). 최대 50건(웹 `MAX_THREAD` 와 같음).
-  - `text` = `translated()` 또는 `"번역 준비 중…"`(웹과 같은 문구).
-  - `when` = `posted_at` → 없으면 `received_at` 를 `util::fmt_kst` 로, 둘 다 없으면 `""`.
-  - `url` = `tweet.url` 또는 `https://x.com/i/status/{id}`.
+- 글 = `tweets.tweets[member]` 중 **만료 안 된 글**(`expires_at` > now, 못 읽으면 보임)의 최신 50건(웹 `MAX_THREAD`).
+  - `text` = `translated()` 또는 `"번역 준비 중…"`. `orig` = 원문 `text`. `url` = `tweet.url` 또는 `https://x.com/i/status/{id}`. `handle` = 글의 `handle` → 채널 `handle`.
+  - `media` = 첨부 그림 주소(영상 · GIF = 썸네일), `quote` = 인용(원문 또는 번역이 있을 때만). `x_name` = 채널 원어 이름(원문 면 — fxtwitter 를 받기 전).
+  - 시각(tweetlogic `whenIso`) = `posted_at` → Snowflake id 에서 계산 → 없으면 `received_at`(「HH:MM 등록」).
+- `units` = 글타래 묶기(tweetlogic `chains`): `reply_to_id` 가 목록 안 글이면 뿌리까지 한 덩어리, 덩어리 안 = 시각순, 덩어리 자리 = 가장 늦은 글 시각(오래된 덩어리가 위). 덩어리마다 날짜 구분선 문구 `「11월 13일 (금)」`.
+- `chips` = `preview.order()` 멤버마다 (트윗이 있으면 누를 수 있음).
+- `upcoming` = 24시간 안 예고(아래 미니 예고 카드). 도넛 모양 · 문구 = `ring_of(남은 ms)`, 시각 = `when_label`.
 
-### 8-2. `show(data)` — Win32 창 (메인 스레드)
-- 패널은 **하나만**. 이미 떠 있으면 내용을 바꾸고 `ShowWindow(SW_SHOW)` + `SetForegroundWindow`.
-- 창: 일반 창(`WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME`, 최소화 · 최대화 버튼 없음), 제목 = `"{name_ko} — Mew Friends"`, 크기 `360×480`(× DPI scale), 처음엔 작업 영역 오른쪽 아래 구석(여백 16px). 크기 조절 시 안의 컨트롤을 다시 배치.
-- 글꼴: `CreateFontW` `"Malgun Gothic"`, 높이 `-15 * scale`, 모든 자식 컨트롤에 `WM_SETFONT`.
-- 위에서부터:
-  1. 방송 중이면 버튼 「▶ 방송 보러 가기 — {제목}」(긴 제목은 버튼 폭에서 잘림 허용) → `util::open_url`. 방송 중 아니면 이 자리 없음.
-  2. 트윗 목록: **owner-draw 가변 높이 LISTBOX**(`LBS_OWNERDRAWVARIABLE | LBS_NOINTEGRALHEIGHT | LBS_NOTIFY | WS_VSCROLL`).
-     - `WM_MEASUREITEM`: `DrawTextW(DT_CALCRECT|DT_WORDBREAK)` 로 본문 높이 + 시각 한 줄 + 위아래 여백 8px.
-     - `WM_DRAWITEM`: 시각(회색 #888, 작게) 한 줄 위, 그 아래 본문(줄바꿈). 선택 · 마우스 강조는 연한 배경. 「번역 준비 중…」 은 회색.
-     - 항목 클릭(`LBN_SELCHANGE`) → 그 글의 `url` 을 `util::open_url`.
-     - 글이 없으면 목록 대신 가운데 정적 글 「표시할 트윗이 없어요」.
-  3. 맨 아래 작은 회색 글: 「비공식 팬 제작 · 공식과 무관」.
-- 닫기(X) = 창 파괴(`DestroyWindow`), 다음 `show` 때 새로 만든다. `Esc` 키로도 닫힌다(목록 컨트롤을 서브클래싱하거나 `WM_KEYDOWN` 처리 — 방법은 자유).
-- 패널은 항상 위가 아니다. 다른 창처럼 행동한다.
-- 데이터는 창 상태(thread_local 또는 `GWLP_USERDATA`)에 둔다.
+### 8-2. 창 — `show(data, anchor)` · `update` · `follow` · `close` · `current` · `take_requests`
+- 말풍선은 **하나만**. 레이어드 팝업(`WS_EX_LAYERED|WS_EX_TOOLWINDOW`, `UpdateLayeredWindow`), 꼬리 끝 = `Critters::anchor(member)`(캐릭터 머리 위 가운데, LIVE 중이면 배지 위). 폭 480px · 최대 높이 600px(위 공간이 모자라면 줄임) · 내용이 적으면 내용 높이.
+- 같은 멤버로 다시 `show` = 닫기(캐릭터를 다시 누르면 닫힘). 다른 멤버 = 내용만 바꿈. 다른 곳을 누르면(비활성) · `Esc` 로 닫힘.
+- 열기 320ms / 닫기 210ms — 꼬리 끝 기준 0.8 → 1 배 + 투명도(원본 PC 팝업과 같은 곡선 `cubic-bezier(0.2,0.8,0.2,1)`).
+- 그림(`view.rs`): 바탕 = 멤버 색(아바타 평균색, 예고판 `sampleLaneColor`) 172deg 그라데이션, 글자색 = 검정 · 흰색 중 대비 큰 쪽, 번역 칸 바탕 = 글자 반대쪽(`paletteFor`).
+  머리 줄 멤버 칩(지금 멤버 = 얼굴 + 이름 알약, 트윗 없는 멤버 = 흐리게) → (방송 중이면 「▶ 방송 보러 가기 · 제목」 알약) → 피드:
+  날짜 구분선 · 글타래 세로줄 · 점 · 글 카드 · 면 점 2개. 위아래 끝 흐림 · 얇은 스크롤 막대 · ↓ 동그라미.
+- **글 카드 두 면**(`card.rs`, 원본 `_article` · tweetlogic `XM` 치수) — 같은 칸에 겹치고 높이 = 큰 쪽.
+  - 번역 면(.tws-ko): 얼굴 40 · 이름 · @핸들 · URL 복사 · 「이어서 · N분 뒤」 · 본문 15.5px/1.6(원문 본문 높이만큼 min-height — 사진 · 인용 위치 맞춤) · 미디어 격자 · 인용 상자(「인용한 글」 + 번역 + 미디어) · 시각 · X 원문.
+  - 원문 면(X 카드 · 어둡게): 얼굴 · 이름 · @핸들 · X 로고 · 「@핸들 님에게 보내는 답글」 · 원문 20px/24px(주소 · #태그 · @멘션 파랑) · 미디어 · 인용(작성자 얼굴 · 이름 · @핸들 + 원문 15/20 + 미디어) · 「오후 7:55 · 2026년 9월 6일」 · 반응 줄(♡ 좋아요 수 · 답글 · 링크 복사) · 「답글 N개 읽기」 알약.
+    이름 · 얼굴 · 숫자 · 인용 작성자는 그 면을 처음 펼칠 때 fxtwitter 에서 받는다(받기 전엔 데이터 값 · 「좋아요」 · 「X 에서 보기」).
+  - 미디어 격자(.tws-md): 1칸 = 원래 비율(세로로 길면 정사각형) · 2~4칸 = 16:9 묶음 · 칸 사이 2 · 넷째 칸 「+N」 · 영상 ▶ · 원문 면 GIF 표시. 그림은 그 카드가 화면 근처에 오면 받는다.
+  - **밀기**(원본 「겹쳐 밀기」): 카드나 점 줄을 가로로 8px 넘게 끌면 앞 면이 손을 따라 밀리며 흐려지고(1 − 1.2k), 뒤 면은 0.985 배 · 투명에서 나타난다(1.6k). 점 폭이 따라간다.
+    놓을 때 25% 넘게 밀었으면 넘김(260ms, 앞 면은 ∓40% 로 나가며 사라짐), 아니면 제자리로 튕김(420ms, cubic-bezier(.25,1.4,.45,1)). 더 갈 면이 없는 쪽은 고무줄(최대 24px). 트랙패드 가로 휠 60 = 한 번 넘김(400ms 쉼).
+  - 머리 줄 「번역 · 원문」 탭 = 모든 글 한꺼번에(보이는 글은 움직임, 알약이 미끄러짐) · ← → 키도 같음. 저장값 = 설정 `tweet_face_orig`(원본 mew:tllang).
+  - 영상 칸(두 면 모두)을 누르면 영상 창(§8-5)에서 재생. 원문 면 사진 · X 로고 · 반응 줄 · 알약 = 브라우저로 트윗 열기, 「링크 복사」 = 주소 복사.
+- **미니 예고 카드**(말풍선 맨 아래 띠, 원본 예고판 `.tcard` · `updateRing`): 이 멤버가 나오는(합동 포함) `upcoming`·`watching` 예고 중 24시간 안에 시작하는 가장 이른 것(시작 시각이 지나도 방송 전이면 3시간까지).
+  썸네일(mqdefault, 회원 전용이면 🔒) · 「11/14(토) 21:00」 + 합동 · 회원 전용 태그 · 제목 한 줄 · 도넛 40px: 1시간 넘게 남음 = 24시간 중 지난 비율만큼 멤버 색 + 「n시간 / 시작까지」,
+  1시간 이내 = 노란 링이 남은 비율만큼(12시부터 비워짐) + 「n분」, 지남 = 빈 링 + 노란 「지각」. 30초마다 갱신. 누르면 방송 주소.
+- 그리기 구조: 바탕(그림자 · 그라데이션 · 꼬리)은 크기 · 색이 바뀔 때만, 카드 면은 한 장씩 그려 캐시(서명 = 올린 단추 · 복사 표시 · 받은 그림 · 원문 정보), 스크롤 · 밀기 땐 붙이기만.
+  글자는 GDI 흑백 커버리지를 받아 색을 섞는다(반투명 · 움직임 위에서도 그릴 수 있게).
+- 열면 맨 아래(최신). 휠 · ↑↓ · PgUp/PgDn · Home/End 로 부드럽게 스크롤. 폴링으로 내용이 바뀌면 `update`(맨 아래였으면 맨 아래 유지).
+- **자동 말풍선** `show_auto(data, anchor)` (설정 `auto_bubble`, 폴링에서 새 트윗이 온 멤버 · 여럿이면 마지막 · 전체 화면 앱 중엔 안 띄움):
+  초점을 빼앗지 않고 뜬 뒤 5초 뒤 닫힌다. 마우스가 올라오면 타이머를 멈추고, 나가면 5초를 처음부터. 누르면(또는 그 캐릭터를 누르면) 고정 = 평소 말풍선(바깥을 누르면 닫힘),
+  고정되면 `take_pinned()` 로 알려 새 트윗 점을 지운다. 사용자가 열어 둔 말풍선이 있으면 덮지 않는다(같은 멤버면 내용만 갱신).
+- **항상 위** `set_topmost(on)` · `Critters::set_topmost(on)`: 켜면 캐릭터 · 말풍선 모두 `HWND_TOPMOST`(전체 화면 앱 중엔 캐릭터를 숨김).
+  끄면 캐릭터는 맨 아래, 자동 말풍선도 다른 창 뒤(맨 아래)에 뜬다. 사용자가 연 말풍선은 어느 쪽이든 맨 앞 + 초점.
+- 메인 루프가 매 바퀴 `follow(anchor)`(캐릭터를 따라감) · `Critters::set_talking(current())`(말하는 동안 유노는 멈춰 섬) · `take_requests()`(칩을 누른 멤버로 다시 열기).
+
+### 8-3a. 항상 위 (critter.rs)
+- 켬 = 다섯 창 모두 `HWND_TOPMOST`(뒤에서부터 올려 첫 창이 무리 맨 아래에 깔리지 않게). 창의 z순서가 바뀌려 하면(`WM_WINDOWPOSCHANGING`) 설정 쪽으로 고정 —
+  켬이면 항상 위 무리 맨 앞, 끔이면 맨 아래. 켬일 때 1초마다 다섯 창의 항상 위 플래그를 확인해 풀린 창이 있으면 로그(`[critter] 항상 위가 풀린 창`)를 남기고 다시 올린다.
+  (2026-11-14 수정: 아라레만 항상 위가 풀려 다른 창 뒤로 가던 문제 — 예전 훅은 켬일 때 z순서 변경을 그대로 통과시켜, 보통 창 뒤로 넣는 요청이 오면 항상 위가 풀렸다.)
+
+### 8-4. `net.rs` — 그림 · 원문 정보 받기
+- 일꾼 스레드 4개(ureq). 그림 = pbs.twimg.com 은 `name=small`, 해독 후 긴 변 1200px 이하로 줄여 메인 스레드 캐시에. 원문 정보 = `https://api.fxtwitter.com/status/{id}`(vxtwitter 는 Cloudflare 403) → 작성자 · 얼굴 · 좋아요 · 답글 · 게시 시각 · 영상(mp4: 720p 이하 중 가장 좋은 것) · 인용 작성자 · 인용 영상.
+- 다 받으면 등록된 창(말풍선 · 영상 창)에 `WM_APP_NET`. 같은 주소는 한 번만(실패도 기억).
+
+### 8-5. `player.rs` — 영상 창
+- 영상 칸을 누르면: 말풍선이 주인인 팝업(둥근 모서리 · 그림자)을 말풍선 가운데에 띄우고, fxtwitter 로 mp4 주소를 받아 Media Foundation(MFPlay)으로 재생(소리 켬, GIF = 소리 없이 반복).
+- 아래 조작 줄 44px: 재생/멈춤 · 진행 막대(누르면 그 자리로) · 시각 · 소리 · 닫기. 영상을 누르면 재생/멈춤, Space · ← → (5초) · M · Esc. 끝나면 가운데 ▶(다시 보기).
+- 실패하면 「영상을 불러오지 못했어요 · 누르면 X 에서 열어요」. 말풍선 · 영상 창 밖을 누르면 둘 다 닫힘.
 
 ### 8-3. 시험
-- `build_data` 를 `#[cfg(test)]` 로: 만료 제외 · 최신이 앞 · 번역 없음 문구 · 시각 우선순위 · live 주소 대체 · 합동 방송(`collab_with` 에 member) · 데이터 비었을 때 이름.
-- 가능하면 디버그 실행으로 창이 뜨는지 확인(확인 못 했으면 보고서에 명시).
+- `build_data` · 글타래 · 시각 문구를 `#[cfg(test)]` 로.
+- 그림 확인: `cargo test shot_bubble -- --ignored`(→ `target/bubble_*.png`), `cargo test critter_bubble -- --ignored`(캐릭터 + 말풍선 합성 → `target/critter_bubble_*.png`, 캐릭터 항상 위 전환), `cargo test auto_bubble -- --ignored`(자동 말풍선 5초 · 마우스 초기화 · 클릭 고정 · 항상 위 전환).
+- 실데이터: `cargo test --release shot_bubble -- --ignored`(번역 · 원문 · 밀기 중간), `shot_media`(사진 · 원문 면 아래), `video_from_bubble`(영상 칸 → 재생 · 화면 캡처 `target/video_play.png`), `play_video`(영상 창 단독), `perf_bubble`(프레임 시간), `shot_mini`(미니 예고 카드: 실제 · 50분 · 지각).
+- 항상 위: `cargo test topmost_all -- --ignored`(끔 → 켬 → 아라레를 맨 아래 · 항상 위 밖으로 밀어도 남는지 → 끔).

@@ -10,7 +10,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 ureq = "3"
-image = { version = "0.25", default-features = false, features = ["png", "webp"] }
+image = { version = "0.25", default-features = false, features = ["png", "webp", "jpeg"] }
 tiny-skia = "0.12"
 tray-icon = "0.26"
 tauri-winrt-notification = "0.8"
@@ -19,19 +19,29 @@ tauri-winrt-notification = "0.8"
 version = "0.62"
 features = [
   "Win32_Foundation",
+  "Win32_Graphics_Dwm",
   "Win32_Graphics_Gdi",
+  "Win32_Media_MediaFoundation",
   "Win32_Security",
   "Win32_Storage_Xps",
   "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_DataExchange",
   "Win32_System_LibraryLoader",
+  "Win32_System_Memory",
   "Win32_System_Registry",
   "Win32_System_Threading",
+  "Win32_System_Variant",
   "Win32_UI_Controls",
   "Win32_UI_HiDpi",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ]
+
+# 디버그 빌드에서도 그림 라이브러리(tiny-skia · image)는 최적화 — 안 하면 말풍선 한 장에 수백 ms 가 걸린다.
+[profile.dev.package."*"]
+opt-level = 3
 
 [profile.release]
 opt-level = "s"
