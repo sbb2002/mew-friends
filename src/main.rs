@@ -112,6 +112,31 @@ fn main() {
     }
 
     toast::init();
+
+    // 확인용: `mew_friends.exe --test-toast` → 시험 토스트 1개를 띄우고 60초 동안 클릭을 기다린다
+    // (설치 없는 exe 에서 앱 이름 · 아이콘 · 누르면 주소 열림을 확인 — PLAN Phase 0).
+    if std::env::args().any(|a| a == "--test-toast") {
+        toast::show(
+            "유노 방송 시작 (시험)",
+            "이 알림을 누르면 mewtype-scheduler 사이트가 열려야 합니다.",
+            Some("https://mewtype-schduler.vercel.app/".to_string()),
+            Some("yuno"),
+        );
+        let start = std::time::Instant::now();
+        let mut msg = MSG::default();
+        let t = unsafe { SetTimer(None, 0, 500, None) };
+        while start.elapsed().as_secs() < 60 {
+            if unsafe { GetMessageW(&mut msg, None, 0, 0) }.0 <= 0 {
+                break;
+            }
+            unsafe { DispatchMessageW(&msg) };
+        }
+        unsafe {
+            let _ = KillTimer(None, t);
+        }
+        return;
+    }
+
     let st = state::load();
     let order: Vec<String> = model::DEFAULT_ORDER.iter().map(|s| s.to_string()).collect();
 

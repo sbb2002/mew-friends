@@ -743,17 +743,8 @@ mod tests {
     #[ignore]
     fn shot_panel() {
         let p = parse_preview(include_str!("../fixtures/preview.sample.json")).unwrap();
-        // 시험 fixture 의 "ritsu" 는 배열이 아니라 객체 하나로 들어 있어 model 이 거부한다(fixture 결함, 원본은 건드리지 않음).
-        // 여기서만 메모리에서 배열로 감싸 읽는다.
-        let mut v: serde_json::Value = serde_json::from_str(include_str!("../fixtures/tweets.sample.json")).unwrap();
-        if let Some(map) = v["tweets"].as_object_mut() {
-            for val in map.values_mut() {
-                if val.is_object() {
-                    *val = serde_json::Value::Array(vec![std::mem::take(val)]);
-                }
-            }
-        }
-        let t = parse_tweets(&v.to_string()).unwrap();
+        // fixture 의 "ritsu" 는 옛 단건 객체 — model 이 배열로 감싸 읽는다(SPEC 계약 I 하위호환).
+        let t = parse_tweets(include_str!("../fixtures/tweets.sample.json")).unwrap();
         let member = p
             .items
             .iter()

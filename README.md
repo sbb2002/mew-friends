@@ -16,4 +16,11 @@ cargo build --release   # target\release\mew_friends.exe
 cargo test
 ```
 
-문서: `docs/PLAN.md`(기획) · `docs/IMPL_SPEC.md`(구현 명세).
+## 실행
+
+- `targetelease\mew_friends.exe` 를 실행하면 트레이에 아이콘이 생기고 바탕화면 아래쪽에 캐릭터가 나온다. 종료 · 알림 설정 · 시작 프로그램 등록은 트레이 메뉴에서.
+- 처음 실행할 때는 이미 있던 방송 · 트윗을 알리지 않는다(이후 새로 생긴 것만).
+- 토스트 확인: 앱이 꺼진 상태에서 `mew_friends.exe --test-toast`.
+- 저장 위치: `%APPDATA%\mew_friends\`(state.json · 토스트 아이콘).
+
+문서: `docs/PLAN.md`(기획 · 검증 기록) · `docs/IMPL_SPEC.md`(구현 명세).
