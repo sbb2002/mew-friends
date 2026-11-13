@@ -38,6 +38,31 @@ where
     Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
 }
 
+/// `{ key: [글…] | 글 | null }` → `{ key: [글…] }`.
+fn tweets_map<'de, D>(d: D) -> Result<HashMap<String, Vec<Tweet>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        Many(Vec<Tweet>),
+        One(Tweet),
+    }
+    let raw = Option::<HashMap<String, Option<OneOrMany>>>::deserialize(d)?.unwrap_or_default();
+    Ok(raw
+        .into_iter()
+        .map(|(k, v)| {
+            let list = match v {
+                Some(OneOrMany::Many(v)) => v,
+                Some(OneOrMany::One(t)) => vec![t],
+                None => Vec::new(),
+            };
+            (k, list)
+        })
+        .collect())
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Preview {
     #[serde(default, deserialize_with = "null_default")]
@@ -88,8 +113,9 @@ pub struct Item {
 pub struct TweetsFile {
     #[serde(default, deserialize_with = "null_default")]
     pub generated_at: Option<String>,
-    /// 멤버 key → 글 배열(최신이 뒤).
-    #[serde(default, deserialize_with = "null_default")]
+    /// 멤버 key → 글 배열(최신이 뒤). 옛(v2.8) 단건 객체는 `[객체]` 로 감싼다
+    /// (백엔드 `xtweet._as_list` 와 같은 하위호환 — SPEC 계약 I).
+    #[serde(default, deserialize_with = "tweets_map")]
     pub tweets: HashMap<String, Vec<Tweet>>,
 }
 
@@ -192,6 +218,8 @@ mod tests {
         assert!(p.items.iter().any(|i| i.state == "live"));
         let t = parse_tweets(include_str!("../fixtures/tweets.sample.json")).unwrap();
         assert!(!t.tweets.is_empty());
+        // fixture 의 ritsu 는 옛 단건 객체 → 1건 배열로
+        assert_eq!(t.tweets.get("ritsu").map(|v| v.len()), Some(1));
     }
 
     #[test]
